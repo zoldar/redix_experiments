@@ -237,9 +237,8 @@ defmodule Redix.PubSub.Connection do
     IO.inspect "Received payload of size #{byte_size(bytes)}"
     with :ok <- setopts(data, socket, active: :once),
          {:ok, data} <- new_bytes(data, bytes) do
-      IO.inspect "Binary refs size before gc: #{RedixLeak.mem(self())}"
-      :erlang.garbage_collect(self())
-      IO.inspect "Binary refs size after gc: #{RedixLeak.mem(self())}"
+      IO.inspect "Message queue size: #{RedixLeak.queue(self())}"
+      IO.inspect "Binary refs size: #{RedixLeak.mem(self())}"
       {:keep_state, data}
     else
       {:error, reason} -> disconnect(data, reason, _handle_disconnection? = true)

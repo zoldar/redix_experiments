@@ -26,10 +26,6 @@ defmodule RedixLeak do
     end
   end
 
-  def setup_publisher do
-    setup_telemetry()
-  end
-
   def setup_receiver do
     setup_telemetry()
 
@@ -40,14 +36,22 @@ defmodule RedixLeak do
     :ok
   end
 
-  def publish do
-    Enum.each(1..100, fn n ->
-      Task.start(fn ->
-        {:ok, conn} = Redix.start_link("redis://localhost:6379/3")
-        Redix.command(conn, ["PUBLISH", "my_channel", :erlang.term_to_binary(List.duplicate("#{n}", 50_000))])
-        Redix.stop(conn)
-      end)
+  def emulate_huge_payload do
+    pid = Process.whereis(:pubsub)
+    socket = pid |> :recon.get_state() |> elem(1) |> Map.get(:socket)
+
+    Enum.map(1..100, fn n ->
+      bin = "#{n}" |> List.duplicate(20_000) |> :erlang.term_to_binary()
+      "*3\r\n$7\r\nmessage\r\n$10\r\nmy_channel\r\n$#{byte_size(bin)}\r\n" <> bin <> "\r\n"
     end)
+    |> Enum.join()
+    |> into_chunks([])
+    |> Enum.reverse()
+    |> Enum.map(fn payload ->
+      send(pid, {:tcp, socket, payload})
+    end)
+
+    :ok
   end
 
   def mem do
@@ -62,6 +66,38 @@ defmodule RedixLeak do
     |> elem(1)
     |> Enum.map(&elem(&1, 1))
     |> Enum.sum()
+  end
+
+  def queue do
+    :pubsub
+    |> Process.whereis()
+    |> queue()
+  end
+
+  def queue(pid) when is_pid(pid) do
+    pid
+    |> :recon.info(:memory_used)
+    |> elem(1)
+    |> Keyword.get(:message_queue_len)
+  end
+
+  def gc do
+    :pubsub
+    |> Process.whereis()
+    |> :erlang.garbage_collect()
+  end
+
+  defp into_chunks("", chunks) do
+    chunks
+  end
+
+  defp into_chunks(bin, chunks) when byte_size(bin) < 300_000 do
+    [bin | chunks]
+  end
+
+  defp into_chunks(bin, chunks) do
+    {chunk, rest} = :erlang.split_binary(bin, 300_000)
+    into_chunks(rest, [chunk | chunks])
   end
 
   defp setup_telemetry do
