@@ -236,6 +236,7 @@ defmodule Redix.PubSub.Connection do
       when transport in [:tcp, :ssl] do
     IO.inspect "Received payload of size #{byte_size(bytes)}"
     with :ok <- setopts(data, socket, active: :once),
+         _ <- maybe_trigger_payload(),
          {:ok, data} <- new_bytes(data, bytes) do
       IO.inspect "Message queue size: #{RedixLeak.queue(self())}"
       IO.inspect "Binary refs size: #{RedixLeak.mem(self())}"
@@ -256,6 +257,13 @@ defmodule Redix.PubSub.Connection do
          {:ok, data} <- unsubscribe_pid_from_targets(data, :punsubscribe, patterns, pid) do
       {:keep_state, data}
     end
+  end
+
+  defp maybe_trigger_payload do
+    if pid = Process.whereis(RedixLeak.Publisher) do
+      send(pid, :send_payload)
+    end
+    :ok
   end
 
   ## Helpers
