@@ -234,9 +234,8 @@ defmodule Redix.PubSub.Connection do
 
   def connected(:info, {transport, socket, bytes}, %__MODULE__{socket: socket} = data)
       when transport in [:tcp, :ssl] do
-    IO.inspect "Received payload of size #{byte_size(bytes)}"
+    # IO.inspect "Received payload of size #{byte_size(bytes)}"
     with :ok <- setopts(data, socket, active: :once),
-         _ <- maybe_trigger_payload(),
          {:ok, data} <- new_bytes(data, bytes) do
       IO.inspect "Message queue size: #{RedixLeak.queue(self())}"
       IO.inspect "Binary refs size: #{RedixLeak.mem(self())}"
@@ -259,13 +258,6 @@ defmodule Redix.PubSub.Connection do
     end
   end
 
-  defp maybe_trigger_payload do
-    if pid = Process.whereis(RedixLeak.Publisher) do
-      send(pid, :send_payload)
-    end
-    :ok
-  end
-
   ## Helpers
 
   defp new_bytes(data, "") do
@@ -275,12 +267,12 @@ defmodule Redix.PubSub.Connection do
   defp new_bytes(data, bytes) do
     case (data.continuation || (&Protocol.parse/1)).(bytes) do
       {:ok, resp, rest} ->
-        IO.inspect "Rest of #{byte_size(rest)} remained"
+        # IO.inspect "Rest of #{byte_size(rest)} remained"
         with {:ok, data} <- handle_pubsub_msg(data, resp),
              do: new_bytes(%{data | continuation: nil}, rest)
 
       {:continuation, continuation} ->
-        IO.inspect "Continuation left"
+        # IO.inspect "Continuation left"
         {:ok, %{data | continuation: continuation}}
     end
   end
