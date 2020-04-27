@@ -1,6 +1,41 @@
 defmodule RedixLeak do
   @moduledoc """
   Documentation for `RedixLeak`.
+
+  Sequence of operations to reproduce the issue:
+
+  - Run 1st instance of iex shell with `iex -S mix`
+  - [1st instance] `{:ok, e} = GenServer.start_link(RedixLeak.Server, [])`
+  - Run 2nd instance of iex shell with `iex -S mix`
+  - [2nd instance] `RedixLeak.setup_receiver`
+  - [1st instance] `send(e, :publish)`
+
+  After that, the output on the 2nd instance should show something like this:
+
+  ```
+  "Continuation left"
+  "Binary refs size: 670080"
+  "Continuation left"
+  "Binary refs size: 1740951"
+  "Continuation left"
+  "Binary refs size: 2550146"
+  "Continuation left"
+  "Binary refs size: 3366746"
+  "Continuation left"
+  ...
+  "Binary refs size: 17144298"
+  "Continuation left"
+  "Binary refs size: 17879602"
+  "Continuation left"
+  "Binary refs size: 18696202"
+  "Continuation left"
+  "Binary refs size: 19512802"
+  "Continuation left"
+  "Binary refs size: 29513142"
+  "Continuation left"
+
+  ... the binary refs size keeps growing
+  ```
   """
 
   defmodule Server do
@@ -10,20 +45,29 @@ defmodule RedixLeak do
       {:ok, listen_socket} = :gen_tcp.listen(6379, [:binary, packet: 0, active: true, ip: {127, 0 ,0, 1}])
       {:ok, socket} = :gen_tcp.accept(listen_socket)
 
-      {:ok, %{socket: socket}}
+      {:ok, %{socket: socket, listen_socket: listen_socket}}
     end
 
     def handle_info(:publish, %{socket: socket} = state) do
-      payloads =
-        Enum.map(1..20_000, fn _n ->
-          bin = String.duplicate("a", 100_000 + Enum.random(-1000..1000))
-          "*3\r\n$7\r\nmessage\r\n$10\r\nmy_channel\r\n$#{byte_size(bin)}\r\n" <> bin <> "\r\n"
-        end)
-        |> Enum.join()
+      bin = String.duplicate("a", 2_000_000)
 
-      :gen_tcp.send(socket, payloads)
+      payload = "*3\r\n$7\r\nmessage\r\n$10\r\nmy_channel\r\n$20000000\r\n" <> bin
+
+      :gen_tcp.send(socket, payload)
+
+      Process.send_after(self(), :disconnect_peer, 100)
 
       {:noreply, state}
+    end
+
+    def handle_info(:disconnect_peer, %{socket: socket, listen_socket: listen_socket} = state) do
+      :gen_tcp.close(socket)
+
+      {:ok, socket} = :gen_tcp.accept(listen_socket)
+
+      Process.send_after(self(), :publish, 100)
+
+      {:noreply, %{state | socket: socket}}
     end
 
     def handle_info({:tcp, socket, bytes}, state) do
@@ -56,8 +100,7 @@ defmodule RedixLeak do
       {:ok, %{counter: 0}}
     end
 
-    def handle_info({:redix_pubsub, _pubsub, _ref, :message, %{channel: "my_channel", payload: _payload}}, state) do
-      # IO.inspect("Received message of size #{byte_size(payload)}!")
+    def handle_info({:redix_pubsub, _pubsub, _ref, :message, %{channel: "my_channel", payload: payload}}, state) do
       {:noreply, state}
     end
 
@@ -88,16 +131,6 @@ defmodule RedixLeak do
     :ok
   end
 
-  def publish do
-    Enum.each(1..100, fn n ->
-      Task.start(fn ->
-        {:ok, conn} = Redix.start_link("redis://localhost:6379")
-        Redix.command(conn, ["PUBLISH", "my_channel", :erlang.term_to_binary(List.duplicate("#{n}", 20_000))])
-        Redix.stop(conn)
-      end)
-    end)
-  end
-
   def mem do
     :pubsub
     |> Process.whereis()
@@ -110,25 +143,6 @@ defmodule RedixLeak do
     |> elem(1)
     |> Enum.map(&elem(&1, 1))
     |> Enum.sum()
-  end
-
-  def queue do
-    :pubsub
-    |> Process.whereis()
-    |> queue()
-  end
-
-  def queue(pid) when is_pid(pid) do
-    pid
-    |> :recon.info(:memory_used)
-    |> elem(1)
-    |> Keyword.get(:message_queue_len)
-  end
-
-  def gc do
-    :pubsub
-    |> Process.whereis()
-    |> :erlang.garbage_collect()
   end
 
   defp setup_telemetry do
